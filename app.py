@@ -53,9 +53,11 @@ def get_chunks(text):
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
     """Create and save FAISS vector store from text chunks"""
+    # Use the correct embedding model name
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=api_key
+        model="models/text-embedding-004",  # ✅ Updated model name
+        google_api_key=api_key,
+        task_type="retrieval_document"
     )
     
     vector_store = FAISS.from_texts(
@@ -64,15 +66,18 @@ def create_vector_store(text_chunks, api_key):
     )
     
     vector_store.save_local("faiss_index")
+    return vector_store
 
 # -------------------------------
 # ASK QUESTION
 # -------------------------------
 def user_input(question, api_key):
     """Retrieve answer using RAG"""
+    # Use the correct embedding model name
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=api_key
+        model="models/text-embedding-004",  # ✅ Updated model name
+        google_api_key=api_key,
+        task_type="retrieval_query"
     )
     
     # Load the vector store
@@ -106,9 +111,9 @@ Answer:
 """
     )
     
-    # Initialize LLM
+    # Initialize LLM - use updated model name
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-1.5-flash",  # ✅ or "gemini-2.0-flash-exp"
         temperature=0.3,
         google_api_key=api_key
     )
@@ -125,7 +130,7 @@ Answer:
         st.subheader("🤖 Answer")
         st.write(response)
         
-        # Optional: Show sources
+        # Show sources
         with st.expander("📚 Sources"):
             for i, doc in enumerate(docs):
                 st.write(f"**Source {i+1}:**")
@@ -136,8 +141,10 @@ Answer:
         error_msg = str(e)
         if "quota" in error_msg.lower():
             st.error("❌ API quota exceeded. Please try again later or use a different API key.")
-        elif "api key" in error_msg.lower():
+        elif "api key" in error_msg.lower() or "invalid" in error_msg.lower():
             st.error("❌ Invalid or expired API key. Please check your Gemini API key.")
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            st.error("❌ Model not found. Please check your API key and try again.")
         else:
             st.error(f"❌ Error: {error_msg}")
 
@@ -165,14 +172,17 @@ with st.sidebar:
                         st.error("❌ No text could be extracted from the PDF. Make sure it's not scanned or image-based.")
                     else:
                         chunks = get_chunks(raw_text)
+                        st.info(f"✅ Extracted {len(chunks)} text chunks from PDF")
                         create_vector_store(chunks, google_api_key)
                         st.success("✅ Documents Processed Successfully!")
             except Exception as e:
                 error_msg = str(e)
                 if "quota" in error_msg.lower():
                     st.error("❌ API quota exceeded. Please try again later.")
-                elif "api key" in error_msg.lower():
+                elif "api key" in error_msg.lower() or "invalid" in error_msg.lower():
                     st.error("❌ Invalid API key. Please check your Gemini API key.")
+                elif "404" in error_msg or "not found" in error_msg.lower():
+                    st.error("❌ Model not found. Make sure you're using the correct API key and model names.")
                 else:
                     st.error(f"❌ Error processing documents: {error_msg}")
 
