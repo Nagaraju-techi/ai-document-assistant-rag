@@ -3,35 +3,42 @@
 
 import streamlit as st
 import os
-import google.generativeai as genai
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import FakeEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain.embeddings.base import Embeddings
+from langchain_core.embeddings import Embeddings
 from typing import List
+import google.generativeai as genai
 
 # -------------------------------
-# CUSTOM EMBEDDINGS USING google-genai
+# CUSTOM EMBEDDINGS
 # -------------------------------
 class GeminiEmbeddings(Embeddings):
     def __init__(self, api_key: str):
+        genai.configure(api_key=api_key)
         self.api_key = api_key
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        from google import genai as genai_client
-        client = genai_client.Client(api_key=self.api_key)
-        result = client.models.embed_content(
-            model="gemini-embedding-exp-03-07",
-            contents=texts
-        )
-        return [e.values for e in result.embeddings]
+        results = []
+        for text in texts:
+            result = genai.embed_content(
+                model="models/embedding-001",
+                content=text,
+                task_type="retrieval_document"
+            )
+            results.append(result["embedding"])
+        return results
 
     def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
+        result = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="retrieval_query"
+        )
+        return result["embedding"]
 
 # -------------------------------
 # SET PAGE CONFIG
