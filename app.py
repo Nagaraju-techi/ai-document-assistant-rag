@@ -1,15 +1,37 @@
 # app.py
 # AI Document Assistant using RAG
-# Beginner Friendly Cognizant Ready Project
 
 import streamlit as st
 import os
+import google.generativeai as genai
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_community.embeddings import FakeEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain.embeddings.base import Embeddings
+from typing import List
+
+# -------------------------------
+# CUSTOM EMBEDDINGS USING google-genai
+# -------------------------------
+class GeminiEmbeddings(Embeddings):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        from google import genai as genai_client
+        client = genai_client.Client(api_key=self.api_key)
+        result = client.models.embed_content(
+            model="gemini-embedding-exp-03-07",
+            contents=texts
+        )
+        return [e.values for e in result.embeddings]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
 
 # -------------------------------
 # SET PAGE CONFIG
@@ -51,24 +73,16 @@ def get_chunks(text):
 # -------------------------------
 # CREATE VECTOR STORE
 # -------------------------------
-def create_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=os.environ.get("GOOGLE_API_KEY"),
-        client_options={"api_endpoint": "generativelanguage.googleapis.com"}
-    )
+def create_vector_store(text_chunks, api_key):
+    embeddings = GeminiEmbeddings(api_key=api_key)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
 # -------------------------------
 # ASK QUESTION
 # -------------------------------
-def user_input(question):
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=os.environ.get("GOOGLE_API_KEY"),
-        client_options={"api_endpoint": "generativelanguage.googleapis.com"}
-    )
+def user_input(question, api_key):
+    embeddings = GeminiEmbeddings(api_key=api_key)
     db = FAISS.load_local(
         "faiss_index",
         embeddings,
@@ -92,7 +106,7 @@ Answer:"""
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3,
-        google_api_key=os.environ.get("GOOGLE_API_KEY")
+        google_api_key=api_key
     )
 
     chain = prompt | llm | StrOutputParser()
@@ -120,7 +134,7 @@ with st.sidebar:
             with st.spinner("Processing..."):
                 raw_text = get_pdf_text(pdf_docs)
                 chunks = get_chunks(raw_text)
-                create_vector_store(chunks)
+                create_vector_store(chunks, google_api_key)
                 st.success("Documents Processed Successfully!")
 
 # -------------------------------
@@ -133,4 +147,4 @@ if question:
     elif not os.path.exists("faiss_index"):
         st.warning("Please upload and process a PDF first.")
     else:
-        user_input(question)
+        user_input(question, google_api_key)
