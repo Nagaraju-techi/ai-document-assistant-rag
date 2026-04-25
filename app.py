@@ -3,13 +3,18 @@
 # Beginner Friendly Cognizant Ready Project
 
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
 import os
+
+from PyPDF2 import PdfReader
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from langchain.chains.question_answering import load_qa_chain
 
 # -------------------------------
 # SET PAGE CONFIG
