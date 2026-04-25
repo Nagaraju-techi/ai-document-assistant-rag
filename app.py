@@ -10,8 +10,7 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain.chains.question_answering import load_qa_chain
@@ -67,8 +66,8 @@ def create_vector_store(text_chunks):
 # ASK QUESTION
 # -------------------------------
 def user_input(question):
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/embedding-001"
     )
 
     db = FAISS.load_local(
