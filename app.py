@@ -11,34 +11,32 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.embeddings import Embeddings
 from typing import List
-import google.generativeai as genai
+import requests
 
 # -------------------------------
-# CUSTOM EMBEDDINGS
+# CUSTOM EMBEDDINGS USING REST API DIRECTLY
 # -------------------------------
 class GeminiEmbeddings(Embeddings):
     def __init__(self, api_key: str):
-        genai.configure(api_key=api_key)
         self.api_key = api_key
+        self.model = "gemini-embedding-001"
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:embedContent?key={self.api_key}"
+
+    def _embed(self, text: str, task_type: str) -> List[float]:
+        payload = {
+            "model": f"models/{self.model}",
+            "content": {"parts": [{"text": text}]},
+            "taskType": task_type
+        }
+        response = requests.post(self.url, json=payload)
+        response.raise_for_status()
+        return response.json()["embedding"]["values"]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        results = []
-        for text in texts:
-            result = genai.embed_content(
-                model="models/embedding-001",
-                content=text,
-                task_type="retrieval_document"
-            )
-            results.append(result["embedding"])
-        return results
+        return [self._embed(text, "RETRIEVAL_DOCUMENT") for text in texts]
 
     def embed_query(self, text: str) -> List[float]:
-        result = genai.embed_content(
-            model="models/embedding-001",
-            content=text,
-            task_type="retrieval_query"
-        )
-        return result["embedding"]
+        return self._embed(text, "RETRIEVAL_QUERY")
 
 # -------------------------------
 # SET PAGE CONFIG
@@ -111,7 +109,7 @@ Answer:"""
     )
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         temperature=0.3,
         google_api_key=api_key
     )
