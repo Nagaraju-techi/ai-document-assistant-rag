@@ -3,13 +3,13 @@
 # Beginner Friendly Cognizant Ready Project
 
 import streamlit as st
+import os
 from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
-import os
 
 # -------------------------------
 # SET PAGE CONFIG
@@ -22,7 +22,6 @@ st.write("Upload a PDF and ask questions from it.")
 # API KEY INPUT
 # -------------------------------
 google_api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
-
 if google_api_key:
     os.environ["GOOGLE_API_KEY"] = google_api_key
 
@@ -51,10 +50,9 @@ def get_chunks(text):
 # CREATE VECTOR STORE
 # -------------------------------
 def create_vector_store(text_chunks):
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001"
     )
-
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
@@ -62,27 +60,21 @@ def create_vector_store(text_chunks):
 # ASK QUESTION
 # -------------------------------
 def user_input(question):
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001"
     )
-
     db = FAISS.load_local(
         "faiss_index",
         embeddings,
         allow_dangerous_deserialization=True
     )
-
     docs = db.similarity_search(question)
-
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3
     )
-
     chain = load_qa_chain(llm, chain_type="stuff")
-
     response = chain.run(input_documents=docs, question=question)
-
     st.subheader("🤖 Answer")
     st.write(response)
 
@@ -96,18 +88,24 @@ with st.sidebar:
         accept_multiple_files=True,
         type=["pdf"]
     )
-
     if st.button("Process Documents"):
-        with st.spinner("Processing..."):
-            raw_text = get_pdf_text(pdf_docs)
-            chunks = get_chunks(raw_text)
-            create_vector_store(chunks)
-            st.success("Documents Processed Successfully!")
+        if not google_api_key:
+            st.error("Please enter your Gemini API Key first.")
+        elif not pdf_docs:
+            st.warning("Please upload at least one PDF.")
+        else:
+            with st.spinner("Processing..."):
+                raw_text = get_pdf_text(pdf_docs)
+                chunks = get_chunks(raw_text)
+                create_vector_store(chunks)
+                st.success("Documents Processed Successfully!")
 
 # -------------------------------
 # MAIN QUESTION INPUT
 # -------------------------------
 question = st.text_input("Ask a question from your PDF")
-
 if question:
-    user_input(question)
+    if not google_api_key:
+        st.error("Please enter your Gemini API Key in the sidebar.")
+    else:
+        user_input(question)
