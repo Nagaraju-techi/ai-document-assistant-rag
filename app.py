@@ -61,7 +61,8 @@ def create_vector_store(text_chunks):
 # -------------------------------
 def user_input(question):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001"
+        model="models/text-embedding-004"
+
     )
     db = FAISS.load_local(
         "faiss_index",
