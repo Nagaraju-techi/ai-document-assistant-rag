@@ -33,7 +33,9 @@ def get_pdf_text(pdf_docs):
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted
     return text
 
 # -------------------------------
@@ -51,7 +53,9 @@ def get_chunks(text):
 # -------------------------------
 def create_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004"
+        model="models/text-embedding-004",
+        task_type="retrieval_document",
+        google_api_key=os.environ.get("GOOGLE_API_KEY")
     )
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
@@ -61,8 +65,9 @@ def create_vector_store(text_chunks):
 # -------------------------------
 def user_input(question):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004"
-
+        model="models/text-embedding-004",
+        task_type="retrieval_query",
+        google_api_key=os.environ.get("GOOGLE_API_KEY")
     )
     db = FAISS.load_local(
         "faiss_index",
@@ -86,7 +91,8 @@ Answer:"""
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
-        temperature=0.3
+        temperature=0.3,
+        google_api_key=os.environ.get("GOOGLE_API_KEY")
     )
 
     chain = prompt | llm | StrOutputParser()
