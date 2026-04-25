@@ -7,9 +7,10 @@ import os
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
 # -------------------------------
 # SET PAGE CONFIG
@@ -69,12 +70,28 @@ def user_input(question):
         allow_dangerous_deserialization=True
     )
     docs = db.similarity_search(question)
+    context = "\n\n".join([doc.page_content for doc in docs])
+
+    prompt = PromptTemplate.from_template(
+        """You are a helpful assistant. Answer the question based only on the context below.
+If the answer is not in the context, say "I couldn't find that information in the uploaded document."
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
+    )
+
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3
     )
-    chain = load_qa_chain(llm, chain_type="stuff")
-    response = chain.run(input_documents=docs, question=question)
+
+    chain = prompt | llm | StrOutputParser()
+    response = chain.invoke({"context": context, "question": question})
+
     st.subheader("🤖 Answer")
     st.write(response)
 
@@ -107,5 +124,7 @@ question = st.text_input("Ask a question from your PDF")
 if question:
     if not google_api_key:
         st.error("Please enter your Gemini API Key in the sidebar.")
+    elif not os.path.exists("faiss_index"):
+        st.warning("Please upload and process a PDF first.")
     else:
         user_input(question)
