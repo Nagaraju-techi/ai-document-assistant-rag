@@ -54,8 +54,8 @@ def get_chunks(text):
 def create_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
-        task_type="retrieval_document",
-        google_api_key=os.environ.get("GOOGLE_API_KEY")
+        google_api_key=os.environ.get("GOOGLE_API_KEY"),
+        client_options={"api_endpoint": "generativelanguage.googleapis.com"}
     )
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
@@ -66,8 +66,8 @@ def create_vector_store(text_chunks):
 def user_input(question):
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
-        task_type="retrieval_query",
-        google_api_key=os.environ.get("GOOGLE_API_KEY")
+        google_api_key=os.environ.get("GOOGLE_API_KEY"),
+        client_options={"api_endpoint": "generativelanguage.googleapis.com"}
     )
     db = FAISS.load_local(
         "faiss_index",
