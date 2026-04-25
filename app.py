@@ -9,35 +9,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.embeddings import Embeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from typing import List
-import requests
-
-# -------------------------------
-# CUSTOM EMBEDDINGS USING REST API DIRECTLY
-# -------------------------------
-class GeminiEmbeddings(Embeddings):
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.model = "gemini-embedding-001"
-        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:embedContent?key={self.api_key}"
-
-    def _embed(self, text: str, task_type: str) -> List[float]:
-        payload = {
-            "model": f"models/{self.model}",
-            "content": {"parts": [{"text": text}]},
-            "taskType": task_type
-        }
-        response = requests.post(self.url, json=payload)
-        response.raise_for_status()
-        return response.json()["embedding"]["values"]
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return [self._embed(text, "RETRIEVAL_DOCUMENT") for text in texts]
-
-    def embed_query(self, text: str) -> List[float]:
-        return self._embed(text, "RETRIEVAL_QUERY")
 
 # -------------------------------
 # SET PAGE CONFIG
@@ -80,39 +52,41 @@ def get_chunks(text):
 # CREATE VECTOR STORE
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
-    embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=google_api_key
-)
-
-vector_store = FAISS.from_texts(
-    text_chunks,
-    embedding=embeddings
-)
-
-vector_store.save_local("faiss_index")
-# -------------------------------
-# ASK QUESTION
-# -------------------------------
-# -------------------------------
-# ASK QUESTION
-# -------------------------------
-def user_input(question, api_key):
+    """Create and save FAISS vector store from text chunks"""
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/embedding-001",
         google_api_key=api_key
     )
+    
+    vector_store = FAISS.from_texts(
+        text_chunks,
+        embedding=embeddings
+    )
+    
+    vector_store.save_local("faiss_index")
 
+# -------------------------------
+# ASK QUESTION
+# -------------------------------
+def user_input(question, api_key):
+    """Retrieve answer using RAG"""
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=api_key
+    )
+    
+    # Load the vector store
     db = FAISS.load_local(
         "faiss_index",
         embeddings,
         allow_dangerous_deserialization=True
     )
-
+    
+    # Search for relevant documents
     docs = db.similarity_search(question, k=4)
-
     context = "\n\n".join([doc.page_content for doc in docs])
-
+    
+    # Create prompt template
     prompt = PromptTemplate.from_template(
         """
 You are a helpful AI assistant.
@@ -131,22 +105,42 @@ Question:
 Answer:
 """
     )
-
+    
+    # Initialize LLM
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3,
         google_api_key=api_key
     )
-
+    
+    # Create and run chain
     chain = prompt | llm | StrOutputParser()
+    
+    try:
+        response = chain.invoke({
+            "context": context,
+            "question": question
+        })
+        
+        st.subheader("🤖 Answer")
+        st.write(response)
+        
+        # Optional: Show sources
+        with st.expander("📚 Sources"):
+            for i, doc in enumerate(docs):
+                st.write(f"**Source {i+1}:**")
+                st.write(doc.page_content[:500] + "...")
+                st.divider()
+                
+    except Exception as e:
+        error_msg = str(e)
+        if "quota" in error_msg.lower():
+            st.error("❌ API quota exceeded. Please try again later or use a different API key.")
+        elif "api key" in error_msg.lower():
+            st.error("❌ Invalid or expired API key. Please check your Gemini API key.")
+        else:
+            st.error(f"❌ Error: {error_msg}")
 
-    response = chain.invoke({
-        "context": context,
-        "question": question
-    })
-
-    st.subheader("🤖 Answer")
-    st.write(response)
 # -------------------------------
 # SIDEBAR FILE UPLOAD
 # -------------------------------
@@ -157,17 +151,30 @@ with st.sidebar:
         accept_multiple_files=True,
         type=["pdf"]
     )
+    
     if st.button("Process Documents"):
         if not google_api_key:
-            st.error("Please enter your Gemini API Key first.")
+            st.error("❌ Please enter your Gemini API Key first.")
         elif not pdf_docs:
-            st.warning("Please upload at least one PDF.")
+            st.warning("⚠️ Please upload at least one PDF.")
         else:
-            with st.spinner("Processing..."):
-                raw_text = get_pdf_text(pdf_docs)
-                chunks = get_chunks(raw_text)
-                create_vector_store(chunks, google_api_key)
-                st.success("Documents Processed Successfully!")
+            try:
+                with st.spinner("Processing..."):
+                    raw_text = get_pdf_text(pdf_docs)
+                    if not raw_text.strip():
+                        st.error("❌ No text could be extracted from the PDF. Make sure it's not scanned or image-based.")
+                    else:
+                        chunks = get_chunks(raw_text)
+                        create_vector_store(chunks, google_api_key)
+                        st.success("✅ Documents Processed Successfully!")
+            except Exception as e:
+                error_msg = str(e)
+                if "quota" in error_msg.lower():
+                    st.error("❌ API quota exceeded. Please try again later.")
+                elif "api key" in error_msg.lower():
+                    st.error("❌ Invalid API key. Please check your Gemini API key.")
+                else:
+                    st.error(f"❌ Error processing documents: {error_msg}")
 
 # -------------------------------
 # MAIN QUESTION INPUT
@@ -175,8 +182,8 @@ with st.sidebar:
 question = st.text_input("Ask a question from your PDF")
 if question:
     if not google_api_key:
-        st.error("Please enter your Gemini API Key in the sidebar.")
+        st.error("❌ Please enter your Gemini API Key in the sidebar.")
     elif not os.path.exists("faiss_index"):
-        st.warning("Please upload and process a PDF first.")
+        st.warning("⚠️ Please upload and process a PDF first.")
     else:
         user_input(question, google_api_key)
