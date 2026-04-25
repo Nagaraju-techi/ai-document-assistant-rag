@@ -53,9 +53,10 @@ def get_chunks(text):
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
     """Create and save FAISS vector store from text chunks"""
-    # Use the correct embedding model name
+    # Use the CORRECT embedding model (gemini-embedding-001)
+    # Note: This model outputs 3072 dimensions by default[citation:6][citation:9]
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",  # ✅ Updated model name
+        model="models/gemini-embedding-001",  # ✅ Correct model name
         google_api_key=api_key,
         task_type="retrieval_document"
     )
@@ -73,9 +74,9 @@ def create_vector_store(text_chunks, api_key):
 # -------------------------------
 def user_input(question, api_key):
     """Retrieve answer using RAG"""
-    # Use the correct embedding model name
+    # Use the CORRECT embedding model
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",  # ✅ Updated model name
+        model="models/gemini-embedding-001",  # ✅ Correct model name
         google_api_key=api_key,
         task_type="retrieval_query"
     )
@@ -111,9 +112,9 @@ Answer:
 """
     )
     
-    # Initialize LLM - use updated model name
+    # Initialize LLM
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",  # ✅ or "gemini-2.0-flash-exp"
+        model="gemini-2.0-flash",  # You can also use "gemini-1.5-flash"
         temperature=0.3,
         google_api_key=api_key
     )
@@ -144,7 +145,7 @@ Answer:
         elif "api key" in error_msg.lower() or "invalid" in error_msg.lower():
             st.error("❌ Invalid or expired API key. Please check your Gemini API key.")
         elif "404" in error_msg or "not found" in error_msg.lower():
-            st.error("❌ Model not found. Please check your API key and try again.")
+            st.error("❌ Model not found. Make sure you're using the correct API key and model names.")
         else:
             st.error(f"❌ Error: {error_msg}")
 
