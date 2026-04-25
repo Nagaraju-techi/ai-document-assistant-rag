@@ -10,6 +10,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.embeddings import Embeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from typing import List
 import requests
 
@@ -79,47 +80,73 @@ def get_chunks(text):
 # CREATE VECTOR STORE
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
-    embeddings = GeminiEmbeddings(api_key=api_key)
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
+    embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/embedding-001",
+    google_api_key=google_api_key
+)
 
+vector_store = FAISS.from_texts(
+    text_chunks,
+    embedding=embeddings
+)
+
+vector_store.save_local("faiss_index")
+# -------------------------------
+# ASK QUESTION
+# -------------------------------
 # -------------------------------
 # ASK QUESTION
 # -------------------------------
 def user_input(question, api_key):
-    embeddings = GeminiEmbeddings(api_key=api_key)
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=api_key
+    )
+
     db = FAISS.load_local(
         "faiss_index",
         embeddings,
         allow_dangerous_deserialization=True
     )
-    docs = db.similarity_search(question)
+
+    docs = db.similarity_search(question, k=4)
+
     context = "\n\n".join([doc.page_content for doc in docs])
 
     prompt = PromptTemplate.from_template(
-        """You are a helpful assistant. Answer the question based only on the context below.
-If the answer is not in the context, say "I couldn't find that information in the uploaded document."
+        """
+You are a helpful AI assistant.
+
+Answer the user's question using ONLY the context below.
+
+If the answer is not available in the context, say:
+"I couldn't find that information in the uploaded document."
 
 Context:
 {context}
 
-Question: {question}
+Question:
+{question}
 
-Answer:"""
+Answer:
+"""
     )
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-1.5-flash",
         temperature=0.3,
         google_api_key=api_key
     )
 
     chain = prompt | llm | StrOutputParser()
-    response = chain.invoke({"context": context, "question": question})
+
+    response = chain.invoke({
+        "context": context,
+        "question": question
+    })
 
     st.subheader("🤖 Answer")
     st.write(response)
-
 # -------------------------------
 # SIDEBAR FILE UPLOAD
 # -------------------------------
