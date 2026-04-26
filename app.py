@@ -34,6 +34,8 @@ if 'embedding_model' not in st.session_state:
     st.session_state.embedding_model = None
 if 'chat_model' not in st.session_state:
     st.session_state.chat_model = None
+if 'vector_store' not in st.session_state:
+    st.session_state.vector_store = None
 
 # -------------------------------
 # API KEY INPUT
@@ -43,51 +45,39 @@ if google_api_key:
     os.environ["GOOGLE_API_KEY"] = google_api_key
 
 # -------------------------------
-# MODEL DISCOVERY (single source of truth)
+# MODEL DISCOVERY
 # -------------------------------
 def discover_models(api_key):
-    """
-    Calls ListModels once and returns two lists:
-      - embedding_models : support embedContent
-      - chat_models      : support generateContent  (prefer flash/pro, skip vision/legacy)
-    """
     genai.configure(api_key=api_key)
     embedding_models = []
     chat_models = []
-
     try:
         for m in genai.list_models():
             methods = m.supported_generation_methods
             if "embedContent" in methods:
                 embedding_models.append(m.name)
             if "generateContent" in methods:
-                # Prefer gemini flash/pro, skip embedding-only or vision-only models
                 name = m.name.lower()
                 if "gemini" in name and "vision" not in name:
                     chat_models.append(m.name)
     except Exception as e:
         raise RuntimeError(f"Could not call ListModels: {e}")
-
     return embedding_models, chat_models
 
 
 def get_embedding_model(api_key):
-    """Return a working GoogleGenerativeAIEmbeddings instance."""
     if st.session_state.embedding_model:
         return GoogleGenerativeAIEmbeddings(
             model=st.session_state.embedding_model,
             google_api_key=api_key,
         )
-
     embedding_models, _ = discover_models(api_key)
-
     if not embedding_models:
         raise RuntimeError(
             "No embedding models available for your API key.\n"
             "Enable the Generative Language API at:\n"
             "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
         )
-
     last_error = None
     for model_name in embedding_models:
         try:
@@ -97,24 +87,16 @@ def get_embedding_model(api_key):
             return emb
         except Exception as e:
             last_error = e
-
     raise RuntimeError(f"No embedding model worked. Last error: {last_error}")
 
 
 def get_chat_model_name(api_key):
-    """Return the name of a working Gemini chat model."""
     if st.session_state.chat_model:
         return st.session_state.chat_model
-
     _, chat_models = discover_models(api_key)
-
     if not chat_models:
-        raise RuntimeError(
-            "No Gemini chat models available for your API key.\n"
-            "Enable the Generative Language API in Google Cloud Console."
-        )
+        raise RuntimeError("No Gemini chat models available for your API key.")
 
-    # Prefer models with 'flash' in name for speed, then 'pro', then whatever is available
     def priority(name):
         n = name.lower()
         if "flash" in n:
@@ -124,11 +106,9 @@ def get_chat_model_name(api_key):
         return 2
 
     chat_models.sort(key=priority)
-
     last_error = None
     for model_name in chat_models:
         try:
-            # Strip "models/" prefix if present — ChatGoogleGenerativeAI expects bare name
             bare_name = model_name.replace("models/", "")
             llm = ChatGoogleGenerativeAI(
                 model=bare_name,
@@ -136,12 +116,11 @@ def get_chat_model_name(api_key):
                 google_api_key=api_key,
                 max_output_tokens=64,
             )
-            llm.invoke("hi")  # smoke test
+            llm.invoke("hi")
             st.session_state.chat_model = bare_name
             return bare_name
         except Exception as e:
             last_error = e
-
     raise RuntimeError(f"No chat model worked. Last error: {last_error}")
 
 # -------------------------------
@@ -175,13 +154,12 @@ def get_chunks(text):
     return splitter.split_text(text)
 
 # -------------------------------
-# VECTOR STORE
+# VECTOR STORE — stored in session_state, no disk writes
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
     embeddings = get_embedding_model(api_key)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-    return vector_store
+    st.session_state.vector_store = vector_store  # ✅ in-memory only
 
 # -------------------------------
 # RAG RESPONSE WITH RETRY LOGIC
@@ -193,7 +171,6 @@ def create_vector_store(text_chunks, api_key):
 )
 def get_llm_response(context, question, api_key):
     model_name = get_chat_model_name(api_key)
-
     prompt = PromptTemplate.from_template("""
 You are a helpful AI assistant specialized in answering questions about documents.
 
@@ -209,14 +186,12 @@ Question:
 
 Answer:
 """)
-
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         temperature=0.3,
         google_api_key=api_key,
         max_output_tokens=1024,
     )
-
     chain = prompt | llm | StrOutputParser()
     return chain.invoke({"context": context, "question": question})
 
@@ -247,15 +222,11 @@ def user_input(question, api_key):
         return
 
     try:
-        embeddings = get_embedding_model(api_key)
-
-        if not os.path.exists("faiss_index"):
-            st.error("❌ Vector store not found. Please process documents first.")
+        if st.session_state.vector_store is None:
+            st.error("❌ Please process documents first.")
             return
 
-        db = FAISS.load_local(
-            "faiss_index", embeddings, allow_dangerous_deserialization=True
-        )
+        db = st.session_state.vector_store  # ✅ load from memory
 
         with st.spinner("🔍 Searching document..."):
             docs = db.similarity_search(question, k=4)
@@ -351,7 +322,7 @@ with st.sidebar:
 
     if st.sidebar.checkbox("Show Debug Info"):
         st.sidebar.write("API Key:", "Set" if google_api_key else "Not Set")
-        st.sidebar.write("Vector Store:", "Exists" if os.path.exists("faiss_index") else "Not Found")
+        st.sidebar.write("Vector Store:", "In Memory" if st.session_state.vector_store else "Not Created")
         st.sidebar.write("Embedding model:", st.session_state.get("embedding_model", "not detected yet"))
         st.sidebar.write("Chat model:", st.session_state.get("chat_model", "not detected yet"))
         st.sidebar.write("Python Version:", os.sys.version)
