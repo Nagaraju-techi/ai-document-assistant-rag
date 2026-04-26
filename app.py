@@ -74,23 +74,61 @@ def get_chunks(text):
 # -------------------------------
 # EMBEDDINGS AND VECTOR STORE
 # -------------------------------
-@st.cache_resource
+
+# Ordered list of model names to try — newest first, fallbacks after
+EMBEDDING_MODELS = [
+    "models/text-embedding-004",
+    "models/embedding-001",
+    "text-embedding-004",
+    "embedding-001",
+]
+
 def get_embeddings(api_key):
-    """Get embeddings model instance - Using correct model name"""
-    return GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",  # ✅ Correct model for newer API
-        google_api_key=api_key
+    """
+    Try each known embedding model name in order and return the first one
+    that initialises without error.  The object is NOT cached with
+    @st.cache_resource so we can pass different api_key values safely.
+    """
+    last_error = None
+    for model_name in EMBEDDING_MODELS:
+        try:
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model=model_name,
+                google_api_key=api_key,
+            )
+            # Do a tiny smoke-test so we catch 404/403 here rather than later
+            embeddings.embed_query("test")
+            # Cache the winning model name so we don't retry on every call
+            st.session_state["embedding_model"] = model_name
+            return embeddings
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise RuntimeError(
+        f"None of the embedding models worked. Last error: {last_error}\n"
+        "Check that your API key is valid and has the Generative Language API enabled."
     )
+
+
+def get_cached_embeddings(api_key):
+    """
+    Return the embeddings object, reusing the previously discovered model name
+    if we already found a working one this session.
+    """
+    model_name = st.session_state.get("embedding_model")
+    if model_name:
+        return GoogleGenerativeAIEmbeddings(
+            model=model_name,
+            google_api_key=api_key,
+        )
+    return get_embeddings(api_key)
+
 
 def create_vector_store(text_chunks, api_key):
     """Create and save FAISS vector store"""
-    embeddings = get_embeddings(api_key)
-    
-    vector_store = FAISS.from_texts(
-        text_chunks,
-        embedding=embeddings
-    )
-    
+    embeddings = get_embeddings(api_key)  # auto-detects working model
+    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
     return vector_store
 
@@ -120,7 +158,6 @@ Question:
 Answer:
 """)
     
-    # Using gemini-1.5-flash for better stability
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3,
@@ -160,15 +197,13 @@ def check_rate_limit():
 def user_input(question, api_key):
     """Process user question and return answer"""
     
-    # Check rate limit
     can_proceed, message = check_rate_limit()
     if not can_proceed:
         st.warning(message)
         return
     
     try:
-        # Load embeddings and vector store
-        embeddings = get_embeddings(api_key)
+        embeddings = get_cached_embeddings(api_key)
         
         if not os.path.exists("faiss_index"):
             st.error("❌ Vector store not found. Please process documents first.")
@@ -180,7 +215,6 @@ def user_input(question, api_key):
             allow_dangerous_deserialization=True
         )
         
-        # Search for relevant documents
         with st.spinner("🔍 Searching document..."):
             docs = db.similarity_search(question, k=4)
             context = "\n\n".join([doc.page_content for doc in docs])
@@ -189,20 +223,17 @@ def user_input(question, api_key):
             st.warning("⚠️ No relevant information found in the document.")
             return
         
-        # Get response
         with st.spinner("🤔 Generating answer..."):
             response = get_llm_response(context, question, api_key)
         
-        # Display answer
         st.subheader("🤖 Answer")
         st.write(response)
         
-        # Show sources
         with st.expander("📚 View Sources"):
             for i, doc in enumerate(docs):
                 st.markdown(f"**Source {i+1}:**")
                 st.text_area(
-                    f"Relevant text",
+                    "Relevant text",
                     value=doc.page_content[:500] + "...",
                     height=150,
                     key=f"source_{i}"
@@ -213,10 +244,13 @@ def user_input(question, api_key):
         error_msg = str(e)
         if "429" in error_msg or "quota" in error_msg.lower():
             st.warning("⚠️ Rate limit reached. Please wait and try again.")
-        elif "api_key" in error_msg.lower():
+        elif "api_key" in error_msg.lower() or "API_KEY" in error_msg:
             st.error("❌ Invalid API key. Please check your Gemini API key.")
         elif "404" in error_msg or "NOT_FOUND" in error_msg:
-            st.error("❌ Model not found. Please check the model name and API version.")
+            st.error(
+                "❌ Model not found. Make sure the **Generative Language API** is enabled "
+                "in your Google Cloud project and that your API key has access to it."
+            )
         else:
             st.error(f"❌ Error: {error_msg}")
 
@@ -248,17 +282,16 @@ with st.sidebar:
                     with st.spinner("🔨 Processing..."):
                         chunks = get_chunks(raw_text)
                         st.info(f"📊 Created {len(chunks)} text chunks")
-                        
                         create_vector_store(chunks, google_api_key)
                         st.session_state.vector_store_created = True
-                        st.success("✅ Documents processed successfully!")
+
+                    model_used = st.session_state.get("embedding_model", "unknown")
+                    st.success(f"✅ Documents processed! (using `{model_used}`)")
                         
+            except RuntimeError as e:
+                st.error(f"❌ {e}")
             except Exception as e:
-                error_msg = str(e)
-                if "404" in error_msg or "NOT_FOUND" in error_msg:
-                    st.error("❌ Embedding model not found. Using alternative model name. Please check the logs.")
-                else:
-                    st.error(f"❌ Error: {error_msg}")
+                st.error(f"❌ Unexpected error: {e}")
     
     if st.session_state.vector_store_created:
         st.sidebar.success("✅ Ready for questions")
@@ -271,10 +304,10 @@ with st.sidebar:
     - Ask about specific topics
     """)
     
-    # Add debug info
     if st.sidebar.checkbox("Show Debug Info"):
         st.sidebar.write("API Key:", "Set" if google_api_key else "Not Set")
         st.sidebar.write("Vector Store:", "Exists" if os.path.exists("faiss_index") else "Not Found")
+        st.sidebar.write("Embedding model:", st.session_state.get("embedding_model", "not detected yet"))
         st.sidebar.write("Python Version:", os.sys.version)
 
 # -------------------------------
