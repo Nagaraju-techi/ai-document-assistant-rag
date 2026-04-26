@@ -32,6 +32,8 @@ if 'vector_store_created' not in st.session_state:
     st.session_state.vector_store_created = False
 if 'embedding_model' not in st.session_state:
     st.session_state.embedding_model = None
+if 'chat_model' not in st.session_state:
+    st.session_state.chat_model = None
 
 # -------------------------------
 # API KEY INPUT
@@ -41,63 +43,106 @@ if google_api_key:
     os.environ["GOOGLE_API_KEY"] = google_api_key
 
 # -------------------------------
-# DISCOVER AVAILABLE EMBEDDING MODELS
+# MODEL DISCOVERY (single source of truth)
 # -------------------------------
-def list_available_embedding_models(api_key):
+def discover_models(api_key):
     """
-    Calls the real ListModels endpoint and returns only model names
-    that support embedContent.
+    Calls ListModels once and returns two lists:
+      - embedding_models : support embedContent
+      - chat_models      : support generateContent  (prefer flash/pro, skip vision/legacy)
     """
     genai.configure(api_key=api_key)
     embedding_models = []
+    chat_models = []
+
     try:
         for m in genai.list_models():
-            if "embedContent" in m.supported_generation_methods:
+            methods = m.supported_generation_methods
+            if "embedContent" in methods:
                 embedding_models.append(m.name)
+            if "generateContent" in methods:
+                # Prefer gemini flash/pro, skip embedding-only or vision-only models
+                name = m.name.lower()
+                if "gemini" in name and "vision" not in name:
+                    chat_models.append(m.name)
     except Exception as e:
-        st.error(f"❌ Could not list models: {e}")
-    return embedding_models
+        raise RuntimeError(f"Could not call ListModels: {e}")
+
+    return embedding_models, chat_models
 
 
-def get_embeddings(api_key):
-    """
-    Auto-discovers available embedding models via ListModels API,
-    smoke-tests each one, and caches the working model in session state.
-    """
-    # Reuse already-discovered working model
+def get_embedding_model(api_key):
+    """Return a working GoogleGenerativeAIEmbeddings instance."""
     if st.session_state.embedding_model:
         return GoogleGenerativeAIEmbeddings(
             model=st.session_state.embedding_model,
             google_api_key=api_key,
         )
 
-    available = list_available_embedding_models(api_key)
+    embedding_models, _ = discover_models(api_key)
 
-    if not available:
+    if not embedding_models:
         raise RuntimeError(
-            "No embedding models found for your API key.\n"
-            "Make sure the Generative Language API is enabled in Google Cloud Console "
-            "at: https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
+            "No embedding models available for your API key.\n"
+            "Enable the Generative Language API at:\n"
+            "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
         )
 
     last_error = None
-    for model_name in available:
+    for model_name in embedding_models:
         try:
-            embeddings = GoogleGenerativeAIEmbeddings(
-                model=model_name,
-                google_api_key=api_key,
-            )
-            embeddings.embed_query("test")  # real smoke test
+            emb = GoogleGenerativeAIEmbeddings(model=model_name, google_api_key=api_key)
+            emb.embed_query("test")
             st.session_state.embedding_model = model_name
-            return embeddings
+            return emb
         except Exception as e:
             last_error = e
-            continue
 
-    raise RuntimeError(
-        f"ListModels returned these models but none worked: {available}\n"
-        f"Last error: {last_error}"
-    )
+    raise RuntimeError(f"No embedding model worked. Last error: {last_error}")
+
+
+def get_chat_model_name(api_key):
+    """Return the name of a working Gemini chat model."""
+    if st.session_state.chat_model:
+        return st.session_state.chat_model
+
+    _, chat_models = discover_models(api_key)
+
+    if not chat_models:
+        raise RuntimeError(
+            "No Gemini chat models available for your API key.\n"
+            "Enable the Generative Language API in Google Cloud Console."
+        )
+
+    # Prefer models with 'flash' in name for speed, then 'pro', then whatever is available
+    def priority(name):
+        n = name.lower()
+        if "flash" in n:
+            return 0
+        if "pro" in n and "vision" not in n:
+            return 1
+        return 2
+
+    chat_models.sort(key=priority)
+
+    last_error = None
+    for model_name in chat_models:
+        try:
+            # Strip "models/" prefix if present — ChatGoogleGenerativeAI expects bare name
+            bare_name = model_name.replace("models/", "")
+            llm = ChatGoogleGenerativeAI(
+                model=bare_name,
+                temperature=0.1,
+                google_api_key=api_key,
+                max_output_tokens=64,
+            )
+            llm.invoke("hi")  # smoke test
+            st.session_state.chat_model = bare_name
+            return bare_name
+        except Exception as e:
+            last_error = e
+
+    raise RuntimeError(f"No chat model worked. Last error: {last_error}")
 
 # -------------------------------
 # PDF TEXT EXTRACTION
@@ -114,7 +159,6 @@ def get_pdf_text(pdf_files):
                     text += extracted + "\n"
         except Exception as e:
             st.error(f"Error reading PDF: {str(e)}")
-            continue
     return text
 
 # -------------------------------
@@ -134,7 +178,7 @@ def get_chunks(text):
 # VECTOR STORE
 # -------------------------------
 def create_vector_store(text_chunks, api_key):
-    embeddings = get_embeddings(api_key)
+    embeddings = get_embedding_model(api_key)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
     return vector_store
@@ -148,6 +192,8 @@ def create_vector_store(text_chunks, api_key):
     reraise=True
 )
 def get_llm_response(context, question, api_key):
+    model_name = get_chat_model_name(api_key)
+
     prompt = PromptTemplate.from_template("""
 You are a helpful AI assistant specialized in answering questions about documents.
 
@@ -163,12 +209,14 @@ Question:
 
 Answer:
 """)
+
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model=model_name,
         temperature=0.3,
         google_api_key=api_key,
-        max_output_tokens=1024
+        max_output_tokens=1024,
     )
+
     chain = prompt | llm | StrOutputParser()
     return chain.invoke({"context": context, "question": question})
 
@@ -184,7 +232,7 @@ def check_rate_limit():
         if time_diff > 60:
             st.session_state.request_count = 0
     if st.session_state.request_count >= 15:
-        return False, "⚠️ Request limit reached. Please wait a minute before asking more questions."
+        return False, "⚠️ Request limit reached. Please wait a minute."
     st.session_state.request_count += 1
     st.session_state.last_request_time = current_time
     return True, ""
@@ -199,16 +247,14 @@ def user_input(question, api_key):
         return
 
     try:
-        embeddings = get_embeddings(api_key)
+        embeddings = get_embedding_model(api_key)
 
         if not os.path.exists("faiss_index"):
             st.error("❌ Vector store not found. Please process documents first.")
             return
 
         db = FAISS.load_local(
-            "faiss_index",
-            embeddings,
-            allow_dangerous_deserialization=True
+            "faiss_index", embeddings, allow_dangerous_deserialization=True
         )
 
         with st.spinner("🔍 Searching document..."):
@@ -232,18 +278,12 @@ def user_input(question, api_key):
                     "Relevant text",
                     value=doc.page_content[:500] + "...",
                     height=150,
-                    key=f"source_{i}"
+                    key=f"source_{i}",
                 )
                 st.divider()
 
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg or "quota" in error_msg.lower():
-            st.warning("⚠️ Rate limit reached. Please wait and try again.")
-        elif "api_key" in error_msg.lower() or "API_KEY" in error_msg:
-            st.error("❌ Invalid API key. Please check your Gemini API key.")
-        else:
-            st.error(f"❌ Error: {error_msg}")
+        st.error(f"❌ Error: {e}")
 
 # -------------------------------
 # SIDEBAR
@@ -251,27 +291,24 @@ def user_input(question, api_key):
 with st.sidebar:
     st.header("📁 Upload PDF Files")
 
-    # Diagnose button — shows exactly what models your key can access
     if google_api_key:
         if st.button("🔍 Check Available Models"):
             with st.spinner("Calling ListModels API..."):
-                models = list_available_embedding_models(google_api_key)
-            if models:
-                st.success(f"✅ Found {len(models)} embedding model(s):")
-                for m in models:
-                    st.code(m)
-            else:
-                st.error(
-                    "No embedding models found.\n"
-                    "Enable the Generative Language API at:\n"
-                    "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
-                )
+                try:
+                    emb_models, chat_models = discover_models(google_api_key)
+                    st.success("✅ Embedding models:")
+                    for m in emb_models:
+                        st.code(m)
+                    st.success("✅ Chat models:")
+                    for m in chat_models:
+                        st.code(m)
+                except Exception as e:
+                    st.error(f"❌ {e}")
 
     pdf_docs = st.file_uploader(
         "Choose PDF files",
         accept_multiple_files=True,
         type=["pdf"],
-        help="Upload one or more PDF files to analyze"
     )
 
     if st.button("🔨 Process Documents", type="primary"):
@@ -285,7 +322,7 @@ with st.sidebar:
                     raw_text = get_pdf_text(pdf_docs)
 
                 if not raw_text.strip():
-                    st.error("❌ No text could be extracted. The PDF might be scanned or image-based.")
+                    st.error("❌ No text could be extracted.")
                 else:
                     with st.spinner("🔨 Processing..."):
                         chunks = get_chunks(raw_text)
@@ -293,8 +330,8 @@ with st.sidebar:
                         create_vector_store(chunks, google_api_key)
                         st.session_state.vector_store_created = True
 
-                    model_used = st.session_state.get("embedding_model", "unknown")
-                    st.success(f"✅ Documents processed! (model: `{model_used}`)")
+                    emb = st.session_state.get("embedding_model", "unknown")
+                    st.success(f"✅ Done! Embedding model: `{emb}`")
 
             except RuntimeError as e:
                 st.error(f"❌ {e}")
@@ -316,6 +353,7 @@ with st.sidebar:
         st.sidebar.write("API Key:", "Set" if google_api_key else "Not Set")
         st.sidebar.write("Vector Store:", "Exists" if os.path.exists("faiss_index") else "Not Found")
         st.sidebar.write("Embedding model:", st.session_state.get("embedding_model", "not detected yet"))
+        st.sidebar.write("Chat model:", st.session_state.get("chat_model", "not detected yet"))
         st.sidebar.write("Python Version:", os.sys.version)
 
 # -------------------------------
@@ -324,7 +362,7 @@ with st.sidebar:
 st.markdown("---")
 question = st.text_input(
     "💭 Ask a question about your document:",
-    placeholder="e.g., What is the main topic of this document?"
+    placeholder="e.g., What is the main topic of this document?",
 )
 
 if question:
