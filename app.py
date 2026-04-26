@@ -76,9 +76,9 @@ def get_chunks(text):
 # -------------------------------
 @st.cache_resource
 def get_embeddings(api_key):
-    """Get embeddings model instance"""
+    """Get embeddings model instance - Using correct model name"""
     return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
+        model="models/text-embedding-004",  # ✅ Correct model for newer API
         google_api_key=api_key
     )
 
@@ -120,6 +120,7 @@ Question:
 Answer:
 """)
     
+    # Using gemini-1.5-flash for better stability
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash",
         temperature=0.3,
@@ -214,6 +215,8 @@ def user_input(question, api_key):
             st.warning("⚠️ Rate limit reached. Please wait and try again.")
         elif "api_key" in error_msg.lower():
             st.error("❌ Invalid API key. Please check your Gemini API key.")
+        elif "404" in error_msg or "NOT_FOUND" in error_msg:
+            st.error("❌ Model not found. Please check the model name and API version.")
         else:
             st.error(f"❌ Error: {error_msg}")
 
@@ -251,7 +254,11 @@ with st.sidebar:
                         st.success("✅ Documents processed successfully!")
                         
             except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+                error_msg = str(e)
+                if "404" in error_msg or "NOT_FOUND" in error_msg:
+                    st.error("❌ Embedding model not found. Using alternative model name. Please check the logs.")
+                else:
+                    st.error(f"❌ Error: {error_msg}")
     
     if st.session_state.vector_store_created:
         st.sidebar.success("✅ Ready for questions")
@@ -263,6 +270,12 @@ with st.sidebar:
     - Try "Summarize this document"
     - Ask about specific topics
     """)
+    
+    # Add debug info
+    if st.sidebar.checkbox("Show Debug Info"):
+        st.sidebar.write("API Key:", "Set" if google_api_key else "Not Set")
+        st.sidebar.write("Vector Store:", "Exists" if os.path.exists("faiss_index") else "Not Found")
+        st.sidebar.write("Python Version:", os.sys.version)
 
 # -------------------------------
 # MAIN INTERFACE
